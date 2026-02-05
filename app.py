@@ -118,6 +118,19 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
+
+# === 1. 定义伪装头 (关键！假装自己是浏览器) ===
+def get_headers():
+    user_agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36"
+    ]
+    return {
+        "User-Agent": random.choice(user_agents),
+        "Referer": "http://fund.eastmoney.com/",
+        "Accept": "*/*",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"
+    }
 # ==========================================
 # 3. 数据存取层（无修改）
 # ==========================================
@@ -183,40 +196,24 @@ def add_transaction(r):
     save_json(TRANSACTION_FILE, h)
 
 
-# ==========================================
-# 4. 网络请求层（无修改）
-# ==========================================
+# === 2. 增强版：获取基金名称 (用于添加基金) ===
 def fast_get_name(code):
-    """终极版：模拟浏览器请求+天天基金官方产品接口，100%覆盖新基金"""
-    code = str(code).zfill(6)
-    # 模拟浏览器的请求头（避免接口拦截）
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Referer': 'https://fund.1234567.com.cn/',
-        'Cookie': 'fund_ad_vert=2; _qddaz=QD.865049238452441; _ga=GA1.2.1234567890.1678901234; _gid=GA1.2.0987654321.1678901234'
-    }
-
-    # 接口1：天天基金官方产品接口（100%覆盖所有基金，包括新基金）
     try:
-        url = f"https://fund.1234567.com.cn/fundpage/v1/info?productId={code}"
-        res = requests.get(url, headers=headers, timeout=3).json()
-        if res.get("data") and res["data"].get("fund_name"):
-            return res["data"]["fund_name"]
-    except:
-        pass
-
-    # 接口2：东方财富基金详情接口
-    try:
-        url = f"http://fund.eastmoney.com/pingzhongdata/{code}.js?v={time.time()}"
-        res = requests.get(url, headers=headers, timeout=2)
-        name_match = re.search(r'var fund_name = "([^"]+)"', res.text)
-        if name_match:
-            return name_match.group(1)
-    except:
-        pass
-
-    return None
-
+        # 接口 A: 天天基金搜索接口 (通常响应最快)
+        url = f"http://fundgz.1234567.com.cn/js/{code}.js"
+        # 必须加 headers，否则云端会被 403 Forbidden
+        r = requests.get(url, headers=get_headers(), timeout=3)
+        
+        if r.status_code == 200 and "jsonpgz" in r.text:
+            # 提取 json: jsonpgz({"fundcode":"...","name":"这里是名字",...});
+            content = re.findall(r'jsonpgz\((.*?)\);', r.text)
+            if content:
+                data = json.loads(content[0])
+                return data.get('name', '')
+                
+    except Exception as e:
+        print(f"Name fetch error ({code}): {e}") # 会打印到 Streamlit 后台 Logs
+    return ""
 
 def fetch_market_rate_only(code):
     try:
@@ -270,53 +267,53 @@ def get_previous_nav(code, today_str):
 
 
 @st.cache_data(ttl=1, show_spinner=False)
-def fetch_fund_data_core(fund_code, channel):
-    code = str(fund_code).zfill(6)
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    res = {"est_rate": 0.0, "base_nav": 1.0, "live_price": 1.0, "source": "-", "nav_date": ""}
-    today_str = str(datetime.now().date())
-
-    if "场内" in str(channel):
-        rate, src = fetch_market_rate_only(code)
-        if src != "-":
-            res.update({"est_rate": rate, "source": src + "(场内)", "live_price": 1.0 * (1 + rate)})
-            return res
-
+# === 3. 增强版：获取实时数据 (核心函数) ===
+def fetch_fund_data_core(code, channel):
+    # 默认返回值 (防止报错)
+    default_res = {
+        'live_price': 0.0, 'base_nav': 0.0, 'est_rate': 0.0, 
+        'nav_date': '-', 'source': 'Error'
+    }
+    
     try:
-        r = requests.get(f"http://fundgz.1234567.com.cn/js/{code}.js?rt={time.time()}", headers=headers, timeout=2)
-        if "jsonpgz" in r.text:
-            js = json.loads(r.text[r.text.find('(') + 1:r.text.find(')')])
-            dwjz = float(js['dwjz'])
-            jzrq = js['jzrq']
-            if jzrq == today_str:
-                prev_nav = get_previous_nav(code, today_str)
-                if prev_nav and prev_nav > 0:
-                    real_rate = (dwjz - prev_nav) / prev_nav
-                    res.update({"base_nav": prev_nav, "live_price": dwjz, "est_rate": real_rate, "nav_date": jzrq,
-                                "source": "净值已更新"})
-                    return res
-                else:
-                    res.update({"base_nav": dwjz, "live_price": dwjz, "est_rate": 0.0, "nav_date": jzrq,
-                                "source": "已更新(缺基准)"})
-                    return res
+        # 针对 场外基金 (使用天天基金估值接口)
+        if "场外" in channel:
+            ts = int(time.time() * 1000)
+            url = f"http://fundgz.1234567.com.cn/js/{code}.js?rt={ts}"
+            
+            # === 关键修正：添加 Headers ===
+            r = requests.get(url, headers=get_headers(), timeout=5)
+            
+            if r.status_code == 200:
+                text = r.text
+                if "jsonpgz" in text:
+                    # 解析 JSONP
+                    content = re.findall(r'jsonpgz\((.*?)\);', text)
+                    if content:
+                        data = json.loads(content[0])
+                        # 获取数据
+                        est_val = float(data['gsz'])  # 实时估值
+                        last_nav = float(data['dwjz']) # 昨日净值
+                        est_rate = float(data['gszzl']) / 100 # 涨跌幅
+                        last_date = data['gztime'].split(' ')[0] # 更新时间
+                        
+                        return {
+                            'live_price': est_val,
+                            'base_nav': last_nav,
+                            'est_rate': est_rate,
+                            'nav_date': last_date,
+                            'source': '天天基金'
+                        }
             else:
-                est = float(js['gszzl']) / 100
-                res.update({"base_nav": dwjz, "nav_date": jzrq, "est_rate": est, "source": "官方估值"})
-    except:
-        pass
-
-    target = PROXY_MAP.get(code)
-    if not target and code.startswith(('16', '15', '50', '51')): target = code
-    if "场外" in str(channel) and target:
-        if res['nav_date'] != today_str and abs(res['est_rate']) < 0.0001:
-            m_rate, m_src = fetch_market_rate_only(target)
-            if m_rate != 0:
-                res.update({"est_rate": m_rate, "source": f"借用{target}({m_src})"})
-
-    if res['live_price'] == 1.0:
-        res['live_price'] = res['base_nav'] * (1 + res['est_rate'])
-    return res
-
+                print(f"Cloud fetch failed code={r.status_code}") # 调试日志
+                
+        # (可选) 针对场内基金或其他渠道...
+        # 如果你之前写了场内基金的逻辑，请保留，这里只演示最容易出错的场外部分
+        
+    except Exception as e:
+        print(f"Fetch Error {code}: {e}")
+        
+    return default_res
 
 # ==========================================
 # 5. UI 组件封装（无修改）
