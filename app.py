@@ -343,7 +343,7 @@ def calculate_dashboard_data(current_df, cache_snapshot):
     return rows, t_d, t_a, t_v, cache_snapshot
 
 # ==========================================
-# 6. 核心 Fragment (修复 use_container_width 问题)
+# 6. 主要 Fragment (修复：允许添加0持仓作为观察)
 # ==========================================
 def sidebar_fragment():
     st.header("⚡ 控制台")
@@ -353,6 +353,7 @@ def sidebar_fragment():
 
     with st.expander("➕ 添加新基金", expanded=False):
         new_code = st.text_input("基金代码", key="sb_new_code", placeholder="6位数字")
+        # 默认值改为 0.0，方便直接添加观察
         new_cost = st.number_input("持仓成本价", key="sb_new_cost", value=0.0, step=0.0001, format="%.4f")
         new_shares = st.number_input("持有份额", key="sb_new_shares", value=0.0, step=0.01, format="%.2f")
 
@@ -360,18 +361,31 @@ def sidebar_fragment():
         if fund_name: st.success(f"已查询：{fund_name}")
         elif new_code.strip(): st.caption("正在查询...")
 
-        # 修复点：use_container_width=True -> width="stretch"
         if st.button("确认添加", width="stretch"):
-            if len(new_code.strip()) != 6: st.error("代码错误")
-            elif new_cost <= 0 or new_shares <= 0: st.error("数值错误")
-            elif not fund_name: st.error("查询失败 (请重试)")
+            if len(new_code.strip()) != 6: 
+                st.error("代码错误")
+            # === 核心修改：允许 0 (仅禁止负数) ===
+            elif new_cost < 0 or new_shares < 0: 
+                st.error("数值不能为负")
+            elif not fund_name: 
+                st.error("查询失败 (请重试)")
             else:
                 df = load_portfolio()
-                if new_code in df['code'].values: st.warning("已存在")
+                if new_code in df['code'].values: 
+                    st.warning("已存在")
                 else:
-                    new_row = {"code": new_code.zfill(6), "name": fund_name, "channel": "场外(支付宝)", "cost": new_cost, "shares": new_shares, "confirm_days": guess_confirm_days(fund_name)}
+                    new_row = {
+                        "code": new_code.zfill(6), 
+                        "name": fund_name, 
+                        "channel": "场外(支付宝)", 
+                        "cost": new_cost, 
+                        "shares": new_shares, 
+                        "confirm_days": guess_confirm_days(fund_name)
+                    }
                     save_portfolio_df(pd.concat([df, pd.DataFrame([new_row])], ignore_index=True))
-                    st.success(f"已添加"); time.sleep(1); st.rerun()
+                    st.success(f"已添加")
+                    time.sleep(1)
+                    st.rerun()
     st.divider()
 
     with st.expander("💸 发起交易", expanded=False):
@@ -380,6 +394,7 @@ def sidebar_fragment():
             opts = current_df.apply(lambda x: f"{x['name']} ({x['code']})", axis=1).tolist()
             sel = st.selectbox("标的", opts, key="sb_trade_sel")
             row = current_df.iloc[opts.index(sel)]
+            
             c_days = int(row.get('confirm_days', 1))
             rt = fetch_fund_data_core(row['code'], row['channel'])
             st.caption(f"当前净值: **{rt['live_price']:.4f}** (T+{c_days})")
@@ -392,7 +407,6 @@ def sidebar_fragment():
             mod = c2.selectbox("单位", ["金额", "份额"], key="sb_trade_mod")
             val = st.number_input("数值", 1.0, step=100.0, key="sb_trade_val")
             
-            # 修复点：use_container_width=True -> width="stretch"
             if st.button("🔴 提交委托", width="stretch", type="primary"):
                 add_transaction({
                     "submit_date": str(datetime.now().date()), "trade_date": str(t_date),
@@ -403,8 +417,6 @@ def sidebar_fragment():
                 })
                 st.success("✅ 已提交")
         else: st.info("请先添加基金")
-
-if 'bg_executor' not in st.session_state: st.session_state.bg_executor = ThreadPoolExecutor(max_workers=1)
 
 @st.fragment(run_every=1)
 def dashboard_live_fragment():
