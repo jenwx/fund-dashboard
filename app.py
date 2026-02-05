@@ -420,11 +420,22 @@ def sidebar_fragment():
 
 @st.fragment(run_every=1)
 def dashboard_live_fragment():
-    now_ts = time.time()
-    if 'last_display_data' not in st.session_state: st.session_state.last_display_data = ([], 0.0, 0.0, 0.0)
-    if 'pending_future' not in st.session_state: st.session_state.pending_future = None
-    if 'last_fetch_time' not in st.session_state: st.session_state.last_fetch_time = 0
+    # === 核心修复：在 Fragment 内部进行防御性初始化 ===
+    # 这样即使是局部自动刷新，发现 executor 丢了也能立刻重建，防止报错
+    if 'bg_executor' not in st.session_state:
+        st.session_state.bg_executor = ThreadPoolExecutor(max_workers=1)
 
+    now_ts = time.time()
+
+    # 1. 初始化状态
+    if 'last_display_data' not in st.session_state:
+        st.session_state.last_display_data = ([], 0.0, 0.0, 0.0)
+    if 'pending_future' not in st.session_state:
+        st.session_state.pending_future = None
+    if 'last_fetch_time' not in st.session_state:
+        st.session_state.last_fetch_time = 0
+
+    # 2. 检查后台任务
     if st.session_state.pending_future:
         if st.session_state.pending_future.done():
             try:
@@ -432,20 +443,29 @@ def dashboard_live_fragment():
                 st.session_state.last_display_data = (rows, t_d, t_a, t_v)
                 st.session_state.finalized_cache.update(new_cache)
                 st.session_state.last_fetch_time = now_ts
-            except Exception as e: print(f"Background update failed: {e}")
-            finally: st.session_state.pending_future = None
+            except Exception as e:
+                print(f"Background update failed: {e}")
+            finally:
+                st.session_state.pending_future = None
 
+    # 3. 触发新任务 (间隔 > 4秒)
     if not st.session_state.pending_future:
         if (now_ts - st.session_state.last_fetch_time >= 4) or (not st.session_state.last_display_data[0]):
             current_df = load_portfolio()
             cache_snapshot = dict(st.session_state.finalized_cache)
-            future = st.session_state.bg_executor.submit(calculate_dashboard_data, current_df, cache_snapshot)
+            
+            # 使用刚刚确保存在的 bg_executor
+            future = st.session_state.bg_executor.submit(
+                calculate_dashboard_data, current_df, cache_snapshot
+            )
             st.session_state.pending_future = future
 
+    # 4. 渲染 UI
     rows, t_d, t_a, t_v = st.session_state.last_display_data
 
     c1, c2 = st.columns([8, 2])
     c1.caption(f"⚡ 实时监控: {datetime.now().strftime('%H:%M:%S')}")
+
     k1, k2, k3 = st.columns(3)
     with k1: render_metric_card("今日盈亏", f"{t_d:+.2f}", "今日波动", t_d >= 0)
     with k2: render_metric_card("历史盈亏", f"{t_a:+.2f}", "累计收益", t_a >= 0)
@@ -456,6 +476,23 @@ def dashboard_live_fragment():
         if st.session_state.pending_future: st.info("🚀 正在极速加载数据...")
         else: st.info("暂无持仓，请在左侧添加基金。")
         return
+
+    df = pd.DataFrame(rows)
+    def color_val(val):
+        return f'color: #ff4d4f; font-weight: bold' if val > 0 else f'color: #2cc995; font-weight: bold' if val < 0 else 'color: #e0e0e0'
+    all_columns = ["基金代码", "基金名称", "渠道", "持有份额", "持仓成本", "最新净值", "涨跌幅", "今日盈亏", "总盈亏", "持仓金额", "数据源"]
+    col_config = {col: st.column_config.TextColumn(col, width="small") for col in all_columns}
+    col_config["基金名称"] = st.column_config.TextColumn("基金名称", width=300)
+    col_config["数据源"] = st.column_config.TextColumn("数据源", width="small")
+
+    st.dataframe(
+        df.style.set_table_styles([{'selector': 'th', 'props': [('text-align', 'left'), ('border-bottom', '1px solid #41424b !important'), ('background-color', '#1e1e1e !important')]}, {'selector': 'td', 'props': [('text-align', 'left')]}])
+        .map(color_val, subset=['今日盈亏', '总盈亏'])
+        .map(lambda x: 'color: #ff4d4f; font-weight:bold' if "+" in str(x) else 'color: #2cc995; font-weight:bold' if "-" in str(x) else 'color:#888' if "更新" in str(x) else 'color: #e0e0e0', subset=['涨跌幅'])
+        .format({"持仓成本": "{:.4f}", "持有份额": "{:.2f}", "持仓金额": "{:,.0f}", "最新净值": "{:.4f}", "今日盈亏": "{:+.2f}", "总盈亏": "{:+.2f}"}),
+        width="stretch", 
+        height=(len(df) + 1) * 35 + 3, hide_index=True, column_order=all_columns, column_config=col_config
+    )
 
     df = pd.DataFrame(rows)
     def color_val(val):
