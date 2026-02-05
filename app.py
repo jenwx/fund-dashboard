@@ -1,3 +1,9 @@
+import streamlit as st
+import pandas as pd
+import requests
+import json
+import os
+import time
 import re
 import random
 from datetime import datetime, timedelta
@@ -183,7 +189,7 @@ def fast_get_name(code):
                 return data.get('name', '')
     except Exception as e:
         print(f"Name fetch error ({code}): {e}")
-
+    
     try:
         url = f"https://fund.1234567.com.cn/fundpage/v1/info?productId={code}"
         r = requests.get(url, headers=get_headers(), timeout=3).json()
@@ -341,11 +347,12 @@ def calculate_dashboard_data(current_df, cache_snapshot):
 # ==========================================
 def sidebar_fragment():
     st.header("⚡ 控制台")
-@@ -353,25 +353,39 @@
+    st.divider()
+    st.toggle("✏️ 编辑模式", key="edit_mode_toggle")
+    st.divider()
 
     with st.expander("➕ 添加新基金", expanded=False):
         new_code = st.text_input("基金代码", key="sb_new_code", placeholder="6位数字")
-
         new_cost = st.number_input("持仓成本价", key="sb_new_cost", value=0.0, step=0.0001, format="%.4f")
         new_shares = st.number_input("持有份额", key="sb_new_shares", value=0.0, step=0.01, format="%.2f")
 
@@ -358,47 +365,42 @@ def sidebar_fragment():
             if len(new_code.strip()) != 6: st.error("代码错误")
             elif new_cost <= 0 or new_shares <= 0: st.error("数值错误")
             elif not fund_name: st.error("查询失败 (请重试)")
-
-
-
-
             else:
                 df = load_portfolio()
                 if new_code in df['code'].values: st.warning("已存在")
-
                 else:
                     new_row = {"code": new_code.zfill(6), "name": fund_name, "channel": "场外(支付宝)", "cost": new_cost, "shares": new_shares, "confirm_days": guess_confirm_days(fund_name)}
-
-
-
-
-
-
-
                     save_portfolio_df(pd.concat([df, pd.DataFrame([new_row])], ignore_index=True))
                     st.success(f"已添加"); time.sleep(1); st.rerun()
-
-
     st.divider()
 
     with st.expander("💸 发起交易", expanded=False):
-@@ -380,6 +394,7 @@
+        current_df = load_portfolio()
+        if not current_df.empty:
             opts = current_df.apply(lambda x: f"{x['name']} ({x['code']})", axis=1).tolist()
             sel = st.selectbox("标的", opts, key="sb_trade_sel")
             row = current_df.iloc[opts.index(sel)]
-
             c_days = int(row.get('confirm_days', 1))
             rt = fetch_fund_data_core(row['code'], row['channel'])
             st.caption(f"当前净值: **{rt['live_price']:.4f}** (T+{c_days})")
-@@ -392,7 +407,6 @@
+            
+            ts = st.radio("时间", ["15:00前", "15:00后"], horizontal=True, label_visibility="collapsed", key="sb_trade_ts")
+            t_date = datetime.now().date() + (timedelta(days=1) if "15:00后" in ts else timedelta(days=0))
+            
+            c1, c2 = st.columns(2)
+            act = c1.selectbox("方向", ["买入", "卖出"], key="sb_trade_act")
             mod = c2.selectbox("单位", ["金额", "份额"], key="sb_trade_mod")
             val = st.number_input("数值", 1.0, step=100.0, key="sb_trade_val")
-
+            
             # 修复点：use_container_width=True -> width="stretch"
             if st.button("🔴 提交委托", width="stretch", type="primary"):
                 add_transaction({
                     "submit_date": str(datetime.now().date()), "trade_date": str(t_date),
-@@ -404,155 +418,153 @@
+                    "confirm_date": str(t_date + timedelta(days=c_days)),
+                    "code": row['code'], "name": row['name'], "type": "buy" if act == "买入" else "sell",
+                    "mode": "amount" if mod == "金额" else "share", "value": val, "status": "pending",
+                    "channel": row['channel']
+                })
                 st.success("✅ 已提交")
         else: st.info("请先添加基金")
 
@@ -436,7 +438,7 @@ def dashboard_live_fragment():
     with k1: render_metric_card("今日盈亏", f"{t_d:+.2f}", "今日波动", t_d >= 0)
     with k2: render_metric_card("历史盈亏", f"{t_a:+.2f}", "累计收益", t_a >= 0)
     with k3: render_metric_card("总资产", f"{t_v:,.0f}", "当前市值", True)
-
+    
     st.write("")
     if not rows:
         if st.session_state.pending_future: st.info("🚀 正在极速加载数据...")
@@ -471,7 +473,7 @@ def dashboard_edit_fragment():
     if current_df.empty:
         st.info("暂无持仓数据，请在侧边栏添加。")
         return
-
+    
     table_height = (len(current_df) + 2) * 35 + 3
     edited_df = st.data_editor(
         current_df,
@@ -505,7 +507,7 @@ def transaction_manager_fragment():
     now = str(datetime.now().date())
     cols = st.columns([3, 1, 2, 1, 1])
     cols[0].caption("标的/方向"); cols[1].caption("状态"); cols[2].caption("预估详情"); cols[3].caption("结算"); cols[4].caption("撤销")
-
+    
     for i, t in enumerate(pend):
         c1, c2, c3, c4, c5 = st.columns([3, 1, 2, 1, 1])
         color = "red" if t['type'] == 'buy' else "green"
