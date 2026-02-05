@@ -5,9 +5,9 @@ import json
 import os
 import time
 import re
-import random  # 必须导入 random
+import random
 from datetime import datetime, timedelta
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 
 # ==========================================
 # 1. 全局配置与状态初始化
@@ -162,7 +162,7 @@ def add_transaction(r):
     save_json(TRANSACTION_FILE, h)
 
 # ==========================================
-# 4. 网络请求层 (云端增强版 - 关键修改)
+# 4. 网络请求层 (云端增强版)
 # ==========================================
 def get_headers():
     """生成随机伪装头，防止云端被拦截"""
@@ -181,7 +181,6 @@ def fast_get_name(code):
     code = str(code).zfill(6)
     try:
         url = f"http://fundgz.1234567.com.cn/js/{code}.js"
-        # 增加 timeout=5 和 伪装头
         r = requests.get(url, headers=get_headers(), timeout=5)
         if r.status_code == 200 and "jsonpgz" in r.text:
             content = re.findall(r'jsonpgz\((.*?)\);', r.text)
@@ -191,7 +190,6 @@ def fast_get_name(code):
     except Exception as e:
         print(f"Name fetch error ({code}): {e}")
     
-    # 备用接口：天天基金详情
     try:
         url = f"https://fund.1234567.com.cn/fundpage/v1/info?productId={code}"
         r = requests.get(url, headers=get_headers(), timeout=3).json()
@@ -199,11 +197,9 @@ def fast_get_name(code):
             return r["data"]["fund_name"]
     except:
         pass
-        
     return ""
 
 def fetch_market_rate_only(code):
-    """场内/ETF行情获取"""
     try:
         r = requests.get(f"http://qt.gtimg.cn/q=sh{code},sz{code}", timeout=2)
         lines = r.text.split(';')
@@ -215,7 +211,6 @@ def fetch_market_rate_only(code):
                     close = float(parts[4])
                     if close > 0: return (curr - close) / close, "腾讯"
     except: pass
-    
     try:
         p = "1" if code.startswith(('5', '6')) else "0"
         url = f"http://push2.eastmoney.com/api/qt/stock/get?fields=f3&secid={p}.{code}"
@@ -223,7 +218,6 @@ def fetch_market_rate_only(code):
         if r.get('data') and r['data']['f3'] != "-":
             return float(r['data']['f3']) / 100, "东财"
     except: pass
-    
     return 0.0, "-"
 
 def get_previous_nav(code, today_str):
@@ -241,33 +235,26 @@ def get_previous_nav(code, today_str):
 
 @st.cache_data(ttl=1, show_spinner=False)
 def fetch_fund_data_core(fund_code, channel):
-    """核心数据获取函数 (已增强云端稳定性)"""
     code = str(fund_code).zfill(6)
     res = {"est_rate": 0.0, "base_nav": 1.0, "live_price": 1.0, "source": "-", "nav_date": ""}
     today_str = str(datetime.now().date())
 
-    # 1. 场内基金处理
     if "场内" in str(channel):
         rate, src = fetch_market_rate_only(code)
         if src != "-":
             res.update({"est_rate": rate, "source": src + "(场内)", "live_price": 1.0 * (1 + rate)})
             return res
 
-    # 2. 场外基金处理 (天天基金接口)
     try:
         ts = int(time.time() * 1000)
         url = f"http://fundgz.1234567.com.cn/js/{code}.js?rt={ts}"
-        # 关键：使用 headers 和 更长的 timeout
         r = requests.get(url, headers=get_headers(), timeout=5)
-        
         if r.status_code == 200 and "jsonpgz" in r.text:
             content = re.findall(r'jsonpgz\((.*?)\);', r.text)
             if content:
                 js = json.loads(content[0])
                 dwjz = float(js['dwjz'])
                 jzrq = js['jzrq']
-                
-                # 如果净值日期是今天，说明净值已更新
                 if jzrq == today_str:
                     prev_nav = get_previous_nav(code, today_str)
                     if prev_nav and prev_nav > 0:
@@ -278,14 +265,10 @@ def fetch_fund_data_core(fund_code, channel):
                         res.update({"base_nav": dwjz, "live_price": dwjz, "est_rate": 0.0, "nav_date": jzrq, "source": "已更新(缺基准)"})
                         return res
                 else:
-                    # 净值未更新，使用估值
                     est = float(js['gszzl']) / 100
                     res.update({"base_nav": dwjz, "live_price": dwjz * (1+est), "est_rate": est, "nav_date": jzrq, "source": "官方估值"})
-    except Exception as e:
-        # print(f"Fetch Error {code}: {e}") # 调试用
-        pass
+    except Exception as e: pass
 
-    # 3. 替身处理 (QDII等)
     target = PROXY_MAP.get(code)
     if not target and code.startswith(('16', '15', '50', '51')): target = code
     if "场外" in str(channel) and target:
@@ -294,10 +277,8 @@ def fetch_fund_data_core(fund_code, channel):
             if m_rate != 0:
                 res.update({"est_rate": m_rate, "source": f"借用{target}", "live_price": res['base_nav'] * (1 + m_rate)})
 
-    # 兜底计算
     if res['live_price'] == 1.0 and res['base_nav'] != 1.0:
         res['live_price'] = res['base_nav'] * (1 + res['est_rate'])
-        
     return res
 
 # ==========================================
@@ -317,7 +298,6 @@ def render_metric_card(label, value, delta_text, is_positive):
     st.markdown(html, unsafe_allow_html=True)
 
 def calculate_dashboard_data(current_df, cache_snapshot):
-    """纯净版计算函数：接收数据快照，返回计算结果"""
     rows = []
     t_d, t_a, t_v = 0.0, 0.0, 0.0
     today_str = str(datetime.now().date())
@@ -326,20 +306,17 @@ def calculate_dashboard_data(current_df, cache_snapshot):
         c, ch = row['code'], row['channel']
         cache_key = f"{c}_{today_str}"
         cached_item = cache_snapshot.get(cache_key)
-
         if cached_item:
             d = cached_item
             updated = True
         else:
             d = fetch_fund_data_core(c, ch)
             updated = ("场外" in ch and d.get('nav_date') == today_str)
-
         live, base, sh, cst = d['live_price'], d['base_nav'], float(row['shares']), float(row['cost'])
         val = live * sh
         day_gain = (live - base) * sh
         acc_gain = (live - cst) * sh
         rate_str = f"{d['est_rate'] * 100:+.2f}%" + (" (已更新)" if updated else "")
-
         return {
             "result": {
                 "基金代码": c, "基金名称": row['name'], "渠道": ch, "持仓成本": cst, "持有份额": sh,
@@ -362,12 +339,11 @@ def calculate_dashboard_data(current_df, cache_snapshot):
                     k, val = data["cache_update"]
                     cache_snapshot[k] = val
             except: pass
-
     rows.sort(key=lambda x: x['持仓金额'], reverse=True)
     return rows, t_d, t_a, t_v, cache_snapshot
 
 # ==========================================
-# 6. 核心 Fragment (侧边栏、主控台、编辑器、交易)
+# 6. 核心 Fragment (修复 use_container_width 问题)
 # ==========================================
 def sidebar_fragment():
     st.header("⚡ 控制台")
@@ -384,6 +360,7 @@ def sidebar_fragment():
         if fund_name: st.success(f"已查询：{fund_name}")
         elif new_code.strip(): st.caption("正在查询...")
 
+        # 修复点：use_container_width=True -> width="stretch"
         if st.button("确认添加", width="stretch"):
             if len(new_code.strip()) != 6: st.error("代码错误")
             elif new_cost <= 0 or new_shares <= 0: st.error("数值错误")
@@ -403,7 +380,6 @@ def sidebar_fragment():
             opts = current_df.apply(lambda x: f"{x['name']} ({x['code']})", axis=1).tolist()
             sel = st.selectbox("标的", opts, key="sb_trade_sel")
             row = current_df.iloc[opts.index(sel)]
-            
             c_days = int(row.get('confirm_days', 1))
             rt = fetch_fund_data_core(row['code'], row['channel'])
             st.caption(f"当前净值: **{rt['live_price']:.4f}** (T+{c_days})")
@@ -416,6 +392,7 @@ def sidebar_fragment():
             mod = c2.selectbox("单位", ["金额", "份额"], key="sb_trade_mod")
             val = st.number_input("数值", 1.0, step=100.0, key="sb_trade_val")
             
+            # 修复点：use_container_width=True -> width="stretch"
             if st.button("🔴 提交委托", width="stretch", type="primary"):
                 add_transaction({
                     "submit_date": str(datetime.now().date()), "trade_date": str(t_date),
@@ -481,7 +458,9 @@ def dashboard_live_fragment():
         .map(color_val, subset=['今日盈亏', '总盈亏'])
         .map(lambda x: 'color: #ff4d4f; font-weight:bold' if "+" in str(x) else 'color: #2cc995; font-weight:bold' if "-" in str(x) else 'color:#888' if "更新" in str(x) else 'color: #e0e0e0', subset=['涨跌幅'])
         .format({"持仓成本": "{:.4f}", "持有份额": "{:.2f}", "持仓金额": "{:,.0f}", "最新净值": "{:.4f}", "今日盈亏": "{:+.2f}", "总盈亏": "{:+.2f}"}),
-        width="stretch", height=(len(df) + 1) * 35 + 3, hide_index=True, column_order=all_columns, column_config=col_config
+        # 修复点：use_container_width=True -> width="stretch"
+        width="stretch", 
+        height=(len(df) + 1) * 35 + 3, hide_index=True, column_order=all_columns, column_config=col_config
     )
 
 def dashboard_edit_fragment():
@@ -506,7 +485,10 @@ def dashboard_edit_fragment():
             "confirm_days": st.column_config.NumberColumn("确认天数(T+N)", min_value=0, step=1, format="%d"),
         },
         column_order=["code", "name", "channel", "cost", "shares", "confirm_days"],
-        hide_index=True, width="stretch", height=table_height, num_rows="dynamic", key="portfolio_editor"
+        hide_index=True, 
+        # 修复点：use_container_width=True -> width="stretch"
+        width="stretch", 
+        height=table_height, num_rows="dynamic", key="portfolio_editor"
     )
 
     if not edited_df.equals(current_df):
