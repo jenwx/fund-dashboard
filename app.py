@@ -1,9 +1,3 @@
-import streamlit as st
-import pandas as pd
-import requests
-import json
-import os
-import time
 import re
 import random
 from datetime import datetime, timedelta
@@ -189,7 +183,7 @@ def fast_get_name(code):
                 return data.get('name', '')
     except Exception as e:
         print(f"Name fetch error ({code}): {e}")
-    
+
     try:
         url = f"https://fund.1234567.com.cn/fundpage/v1/info?productId={code}"
         r = requests.get(url, headers=get_headers(), timeout=3).json()
@@ -343,17 +337,15 @@ def calculate_dashboard_data(current_df, cache_snapshot):
     return rows, t_d, t_a, t_v, cache_snapshot
 
 # ==========================================
-# 6. 主要 Fragment (修复：允许添加0持仓作为观察)
+# 6. 核心 Fragment (修复 use_container_width 问题)
 # ==========================================
 def sidebar_fragment():
     st.header("⚡ 控制台")
-    st.divider()
-    st.toggle("✏️ 编辑模式", key="edit_mode_toggle")
-    st.divider()
+@@ -353,25 +353,39 @@
 
     with st.expander("➕ 添加新基金", expanded=False):
         new_code = st.text_input("基金代码", key="sb_new_code", placeholder="6位数字")
-        # 默认值改为 0.0，方便直接添加观察
+
         new_cost = st.number_input("持仓成本价", key="sb_new_cost", value=0.0, step=0.0001, format="%.4f")
         new_shares = st.number_input("持有份额", key="sb_new_shares", value=0.0, step=0.01, format="%.2f")
 
@@ -361,81 +353,64 @@ def sidebar_fragment():
         if fund_name: st.success(f"已查询：{fund_name}")
         elif new_code.strip(): st.caption("正在查询...")
 
+        # 修复点：use_container_width=True -> width="stretch"
         if st.button("确认添加", width="stretch"):
-            if len(new_code.strip()) != 6: 
-                st.error("代码错误")
-            # === 核心修改：允许 0 (仅禁止负数) ===
-            elif new_cost < 0 or new_shares < 0: 
-                st.error("数值不能为负")
-            elif not fund_name: 
-                st.error("查询失败 (请重试)")
+            if len(new_code.strip()) != 6: st.error("代码错误")
+            elif new_cost <= 0 or new_shares <= 0: st.error("数值错误")
+            elif not fund_name: st.error("查询失败 (请重试)")
+
+
+
+
             else:
                 df = load_portfolio()
-                if new_code in df['code'].values: 
-                    st.warning("已存在")
+                if new_code in df['code'].values: st.warning("已存在")
+
                 else:
-                    new_row = {
-                        "code": new_code.zfill(6), 
-                        "name": fund_name, 
-                        "channel": "场外(支付宝)", 
-                        "cost": new_cost, 
-                        "shares": new_shares, 
-                        "confirm_days": guess_confirm_days(fund_name)
-                    }
+                    new_row = {"code": new_code.zfill(6), "name": fund_name, "channel": "场外(支付宝)", "cost": new_cost, "shares": new_shares, "confirm_days": guess_confirm_days(fund_name)}
+
+
+
+
+
+
+
                     save_portfolio_df(pd.concat([df, pd.DataFrame([new_row])], ignore_index=True))
-                    st.success(f"已添加")
-                    time.sleep(1)
-                    st.rerun()
+                    st.success(f"已添加"); time.sleep(1); st.rerun()
+
+
     st.divider()
 
     with st.expander("💸 发起交易", expanded=False):
-        current_df = load_portfolio()
-        if not current_df.empty:
+@@ -380,6 +394,7 @@
             opts = current_df.apply(lambda x: f"{x['name']} ({x['code']})", axis=1).tolist()
             sel = st.selectbox("标的", opts, key="sb_trade_sel")
             row = current_df.iloc[opts.index(sel)]
-            
+
             c_days = int(row.get('confirm_days', 1))
             rt = fetch_fund_data_core(row['code'], row['channel'])
             st.caption(f"当前净值: **{rt['live_price']:.4f}** (T+{c_days})")
-            
-            ts = st.radio("时间", ["15:00前", "15:00后"], horizontal=True, label_visibility="collapsed", key="sb_trade_ts")
-            t_date = datetime.now().date() + (timedelta(days=1) if "15:00后" in ts else timedelta(days=0))
-            
-            c1, c2 = st.columns(2)
-            act = c1.selectbox("方向", ["买入", "卖出"], key="sb_trade_act")
+@@ -392,7 +407,6 @@
             mod = c2.selectbox("单位", ["金额", "份额"], key="sb_trade_mod")
             val = st.number_input("数值", 1.0, step=100.0, key="sb_trade_val")
-            
+
+            # 修复点：use_container_width=True -> width="stretch"
             if st.button("🔴 提交委托", width="stretch", type="primary"):
                 add_transaction({
                     "submit_date": str(datetime.now().date()), "trade_date": str(t_date),
-                    "confirm_date": str(t_date + timedelta(days=c_days)),
-                    "code": row['code'], "name": row['name'], "type": "buy" if act == "买入" else "sell",
-                    "mode": "amount" if mod == "金额" else "share", "value": val, "status": "pending",
-                    "channel": row['channel']
-                })
+@@ -404,155 +418,153 @@
                 st.success("✅ 已提交")
         else: st.info("请先添加基金")
 
+if 'bg_executor' not in st.session_state: st.session_state.bg_executor = ThreadPoolExecutor(max_workers=1)
+
 @st.fragment(run_every=1)
 def dashboard_live_fragment():
-    # === 核心修复：在 Fragment 内部进行防御性初始化 ===
-    # 这样即使是局部自动刷新，发现 executor 丢了也能立刻重建，防止报错
-    if 'bg_executor' not in st.session_state:
-        st.session_state.bg_executor = ThreadPoolExecutor(max_workers=1)
-
     now_ts = time.time()
+    if 'last_display_data' not in st.session_state: st.session_state.last_display_data = ([], 0.0, 0.0, 0.0)
+    if 'pending_future' not in st.session_state: st.session_state.pending_future = None
+    if 'last_fetch_time' not in st.session_state: st.session_state.last_fetch_time = 0
 
-    # 1. 初始化状态
-    if 'last_display_data' not in st.session_state:
-        st.session_state.last_display_data = ([], 0.0, 0.0, 0.0)
-    if 'pending_future' not in st.session_state:
-        st.session_state.pending_future = None
-    if 'last_fetch_time' not in st.session_state:
-        st.session_state.last_fetch_time = 0
-
-    # 2. 检查后台任务
     if st.session_state.pending_future:
         if st.session_state.pending_future.done():
             try:
@@ -443,56 +418,30 @@ def dashboard_live_fragment():
                 st.session_state.last_display_data = (rows, t_d, t_a, t_v)
                 st.session_state.finalized_cache.update(new_cache)
                 st.session_state.last_fetch_time = now_ts
-            except Exception as e:
-                print(f"Background update failed: {e}")
-            finally:
-                st.session_state.pending_future = None
+            except Exception as e: print(f"Background update failed: {e}")
+            finally: st.session_state.pending_future = None
 
-    # 3. 触发新任务 (间隔 > 4秒)
     if not st.session_state.pending_future:
         if (now_ts - st.session_state.last_fetch_time >= 4) or (not st.session_state.last_display_data[0]):
             current_df = load_portfolio()
             cache_snapshot = dict(st.session_state.finalized_cache)
-            
-            # 使用刚刚确保存在的 bg_executor
-            future = st.session_state.bg_executor.submit(
-                calculate_dashboard_data, current_df, cache_snapshot
-            )
+            future = st.session_state.bg_executor.submit(calculate_dashboard_data, current_df, cache_snapshot)
             st.session_state.pending_future = future
 
-    # 4. 渲染 UI
     rows, t_d, t_a, t_v = st.session_state.last_display_data
 
     c1, c2 = st.columns([8, 2])
     c1.caption(f"⚡ 实时监控: {datetime.now().strftime('%H:%M:%S')}")
-
     k1, k2, k3 = st.columns(3)
     with k1: render_metric_card("今日盈亏", f"{t_d:+.2f}", "今日波动", t_d >= 0)
     with k2: render_metric_card("历史盈亏", f"{t_a:+.2f}", "累计收益", t_a >= 0)
     with k3: render_metric_card("总资产", f"{t_v:,.0f}", "当前市值", True)
-    
+
     st.write("")
     if not rows:
         if st.session_state.pending_future: st.info("🚀 正在极速加载数据...")
         else: st.info("暂无持仓，请在左侧添加基金。")
         return
-
-    df = pd.DataFrame(rows)
-    def color_val(val):
-        return f'color: #ff4d4f; font-weight: bold' if val > 0 else f'color: #2cc995; font-weight: bold' if val < 0 else 'color: #e0e0e0'
-    all_columns = ["基金代码", "基金名称", "渠道", "持有份额", "持仓成本", "最新净值", "涨跌幅", "今日盈亏", "总盈亏", "持仓金额", "数据源"]
-    col_config = {col: st.column_config.TextColumn(col, width="small") for col in all_columns}
-    col_config["基金名称"] = st.column_config.TextColumn("基金名称", width=300)
-    col_config["数据源"] = st.column_config.TextColumn("数据源", width="small")
-
-    st.dataframe(
-        df.style.set_table_styles([{'selector': 'th', 'props': [('text-align', 'left'), ('border-bottom', '1px solid #41424b !important'), ('background-color', '#1e1e1e !important')]}, {'selector': 'td', 'props': [('text-align', 'left')]}])
-        .map(color_val, subset=['今日盈亏', '总盈亏'])
-        .map(lambda x: 'color: #ff4d4f; font-weight:bold' if "+" in str(x) else 'color: #2cc995; font-weight:bold' if "-" in str(x) else 'color:#888' if "更新" in str(x) else 'color: #e0e0e0', subset=['涨跌幅'])
-        .format({"持仓成本": "{:.4f}", "持有份额": "{:.2f}", "持仓金额": "{:,.0f}", "最新净值": "{:.4f}", "今日盈亏": "{:+.2f}", "总盈亏": "{:+.2f}"}),
-        width="stretch", 
-        height=(len(df) + 1) * 35 + 3, hide_index=True, column_order=all_columns, column_config=col_config
-    )
 
     df = pd.DataFrame(rows)
     def color_val(val):
@@ -522,7 +471,7 @@ def dashboard_edit_fragment():
     if current_df.empty:
         st.info("暂无持仓数据，请在侧边栏添加。")
         return
-    
+
     table_height = (len(current_df) + 2) * 35 + 3
     edited_df = st.data_editor(
         current_df,
@@ -556,7 +505,7 @@ def transaction_manager_fragment():
     now = str(datetime.now().date())
     cols = st.columns([3, 1, 2, 1, 1])
     cols[0].caption("标的/方向"); cols[1].caption("状态"); cols[2].caption("预估详情"); cols[3].caption("结算"); cols[4].caption("撤销")
-    
+
     for i, t in enumerate(pend):
         c1, c2, c3, c4, c5 = st.columns([3, 1, 2, 1, 1])
         color = "red" if t['type'] == 'buy' else "green"
