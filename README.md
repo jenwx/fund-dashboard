@@ -82,7 +82,7 @@ IS_LOCAL = False
 ### 1. 环境安装
 ```Bash
 # 1. 克隆项目
-git clone [https://github.com/你的用户名/fund-dashboard.git](https://github.com/你的用户名/fund-dashboard.git)
+git clone [https://github.com/jenwx/fund-dashboard.git](https://github.com/jenwx/fund-dashboard.git)
 cd fund-dashboard
 
 # 2. 创建并激活虚拟环境 (可选)
