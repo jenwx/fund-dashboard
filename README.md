@@ -1,4 +1,4 @@
-# 🏦 基金实盘驾驶舱 (Fund Dashboard)
+# 🏦 基金实盘 (Fund Dashboard)
 
 一个基于 Python Streamlit 的现代化基金实盘监控与管理系统。支持场外基金（支付宝/天天基金）和场内 ETF 的实时估值、持仓管理及盈亏分析。
 
