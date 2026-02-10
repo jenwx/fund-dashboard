@@ -1,4 +1,4 @@
-# 🏦 基金实盘驾驶舱 (Fund Dashboard)
+# 🏦 基金实盘 (Fund Dashboard)
 
 ![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?style=for-the-badge&logo=Streamlit&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3.9%2B-blue?style=for-the-badge&logo=python&logoColor=white)
@@ -33,11 +33,7 @@
 
 ## 📸 界面预览
 
-| 资产全览 (暗黑模式) | 交易管理 |
-| :---: | :---: |
-| ![Dashboard](./images/dashboard_preview.png) | ![Trade](./images/trade_preview.png) |
-
-*(请在仓库根目录下创建 `images` 文件夹并放入你的截图)*
+![Dashboard](https://img.acyaer.nyc.mn/file/fund-dashboard/1770715882446_image.png) 
 
 ---
 
@@ -70,20 +66,22 @@ auth_uri = "[https://accounts.google.com/o/oauth2/auth](https://accounts.google.
 token_uri = "[https://oauth2.googleapis.com/token](https://oauth2.googleapis.com/token)"
 auth_provider_x509_cert_url = "[https://www.googleapis.com/oauth2/v1/certs](https://www.googleapis.com/oauth2/v1/certs)"
 client_x509_cert_url = "你的client_x509_cert_url"
-3. 代码配置检查
+```
+### 3. 代码配置检查
 打开 app.py，确保顶部配置如下（云端部署不需要代理）：
 
-Python
+```Python
 # app.py 第 7 行左右
-IS_LOCAL = False 
-4. 启动
+IS_LOCAL = False
+```
+### 4. 启动
 点击 Deploy，系统会自动安装 requirements.txt 中的依赖并启动应用。
 
-💻 本地开发运行
+# 💻 本地开发运行
 如果你在中国大陆地区本地运行，由于 Google 服务被墙，你需要配置本地代理。
 
-1. 环境安装
-Bash
+### 1. 环境安装
+```Bash
 # 1. 克隆项目
 git clone [https://github.com/你的用户名/fund-dashboard.git](https://github.com/你的用户名/fund-dashboard.git)
 cd fund-dashboard
@@ -94,16 +92,19 @@ source .venv/bin/activate  # Windows: .venv\Scripts\activate
 
 # 3. 安装依赖
 pip install -r requirements.txt
-2. 配置本地 Secrets
+```
+### 2. 配置本地 Secrets
 在项目根目录创建 .streamlit 文件夹，并在其中新建 secrets.toml 文件，填入与上面云端部署相同的 Google Sheets 配置。
 
-3. 开启本地代理加速
+### 3. 开启本地代理加速
 修改 app.py 顶部配置，填入你的 VPN 端口号（例如 Clash 通常是 7890/7897）：
 
-Python
+```Python
 # app.py
 IS_LOCAL = True  # 开启本地代理模式
 PROXY_PORT = "7890" # 修改为你梯子的端口
+```
 4. 运行
-Bash
+```Bash
 streamlit run app.py
+```
