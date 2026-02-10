@@ -207,8 +207,9 @@ def save_portfolio_df(df):
 
 def load_transactions():
     """读取交易记录"""
+    conn = get_conn()
     try:
-        conn = get_conn()
+
         df = conn.read(worksheet="transactions", ttl=60)
         if df.empty:
             return []
@@ -857,16 +858,48 @@ def dashboard_edit_fragment():
 
 
 def transaction_manager_fragment():
-    """交易管理组件"""
+    """交易管理组件（修复闪回问题：增加黑名单过滤）"""
     st.subheader("交易管理")
-    transactions = load_transactions()  # 从云端读取交易记录
-    pending_trans = [t for t in transactions if t['status'] == 'pending']
+
+    # 1. 初始化黑名单 (用于临时屏蔽刚操作过的交易，防止API延迟导致的闪回)
+    if 'trans_blacklist' not in st.session_state:
+        st.session_state.trans_blacklist = []
+
+    # 2. 读取数据
+    transactions = load_transactions()
+
+    # 3. 筛选 Pending 且 不在黑名单中 的交易
+    pending_trans = []
+    for t in transactions:
+        # 生成唯一指纹 (代码+日期+类型+金额)，确保精准屏蔽
+        t_id = f"{t['code']}_{t['trade_date']}_{t['type']}_{t['value']}"
+
+        if t['status'] == 'pending' and t_id not in st.session_state.trans_blacklist:
+            # 将生成的ID绑定到对象上，方便后面使用
+            t['_id'] = t_id
+            pending_trans.append(t)
 
     if not pending_trans:
-        st.info("🎉 暂无待处理交易");
+        st.toast("🎉 暂无待处理交易", icon="🎉")
         return
 
     today = str(datetime.now().date())
+
+    # 辅助函数：更新云端
+    def safe_update_transactions(remaining_trans):
+        standard_columns = ["submit_date", "trade_date", "confirm_date", "code", "name", "type", "mode", "value",
+                            "status", "channel"]
+        trans_df = pd.DataFrame(remaining_trans)
+        if not trans_df.empty:
+            trans_df = trans_df.reindex(columns=standard_columns, fill_value="")
+        else:
+            trans_df = pd.DataFrame(columns=standard_columns)
+
+        try:
+            conn = get_conn()
+            conn.update(worksheet="transactions", data=trans_df)
+        except Exception as e:
+            st.error(f"云端更新失败: {e}")
 
     # 表头
     cols = st.columns([3, 1, 2, 1, 1])
@@ -876,103 +909,96 @@ def transaction_manager_fragment():
     cols[3].caption("结算");
     cols[4].caption("撤销")
 
-    # 渲染待处理交易
+    # 渲染列表
     for i, trans in enumerate(pending_trans):
-        col1, col2, col3, col4, col5 = st.columns([3, 1, 2, 1, 1])
+        # 这里的 trans['_id'] 就是我们刚才生成的唯一指纹
+        current_id = trans['_id']
 
-        # 标的和方向
-        color = "red" if trans['type'] == 'buy' else "green"
-        col1.markdown(f"**{trans['name']}** :{color}[{trans['type']}]")
-        col1.caption(f"{trans['channel']} | {trans['trade_date']}")
+        row_container = st.empty()
+        with row_container.container():
+            c1, c2, c3, c4, c5 = st.columns([3, 1, 2, 1, 1])
 
-        # 状态判断
-        ready_to_confirm = today >= trans['confirm_date']
-        if ready_to_confirm:
-            col2.success("✅ 可结算")
-        else:
-            col2.info(f"⏳ {trans['confirm_date']}")
+            color = "red" if trans['type'] == 'buy' else "green"
+            c1.markdown(f"**{trans['name']}** :{color}[{trans['type']}]")
+            c1.caption(f"{trans['channel']} | {trans['trade_date']}")
 
-        # 委托信息
-        unit = "元" if trans['mode'] == 'amount' else "份"
-        col3.caption(f"委托: {trans['value']} {unit}")
+            ready = today >= trans['confirm_date']
+            if ready:
+                c2.success("✅ 可结算")
+            else:
+                c2.info(f"⏳ {trans['confirm_date']}")
 
-        # 获取当前净值
-        rt = fetch_fund_data_core(trans['code'], trans['channel'])
+            unit = "元" if trans['mode'] == 'amount' else "份"
+            c3.caption(f"委托: {trans['value']} {unit}")
 
-        # 结算按钮
-        if ready_to_confirm:
-            real_price = col3.number_input(
-                f"净#{i}",
-                value=float(rt['live_price']),
-                format="%.4f",
-                label_visibility="collapsed"
-            )
-            if col4.button("确认", key=f"btn_ok_{i}"):
-                # 加载持仓数据
-                portfolio_df = load_portfolio()
-                matches = portfolio_df[portfolio_df['code'] == trans['code']]
+            rt = fetch_fund_data_core(trans['code'], trans['channel'])
 
-                # 若无该基金则新增
-                if matches.empty:
-                    new_row = {
-                        "code": trans['code'],
-                        "name": trans['name'],
-                        "channel": trans['channel'],
-                        "cost": 0.0,
-                        "shares": 0.0,
-                        "confirm_days": 1
-                    }
-                    portfolio_df = pd.concat([portfolio_df, pd.DataFrame([new_row])], ignore_index=True)
-                    idx = len(portfolio_df) - 1
-                else:
-                    idx = matches.index[0]
+            # === 结算逻辑 ===
+            if ready:
+                real_price = c3.number_input(f"净#{i}", value=float(rt['live_price']), format="%.4f",
+                                             label_visibility="collapsed")
+                if c4.button("确认", key=f"btn_ok_{i}"):
+                    row_container.empty()  # 1. 立即视觉消失
 
-                # 计算份额和金额
-                current_row = portfolio_df.loc[idx]
-                if trans['mode'] == "amount":
-                    trade_shares = float(trans['value']) / real_price
-                    trade_amount = float(trans['value'])
-                else:
-                    trade_shares = float(trans['value'])
-                    trade_amount = float(trans['value']) * real_price
+                    # 2. 加入黑名单 (防止闪回)
+                    st.session_state.trans_blacklist.append(current_id)
 
-                # 更新持仓
-                if trans['type'] == 'buy':
-                    new_shares = float(current_row['shares']) + trade_shares
-                    if new_shares > 0:
-                        new_cost = (float(current_row['shares']) * float(
-                            current_row['cost']) + trade_amount) / new_shares
+                    # 3. 执行业务逻辑
+                    pdf = load_portfolio()
+                    matches = pdf[pdf['code'] == trans['code']]
+                    if matches.empty:
+                        new_row = {"code": trans['code'], "name": trans['name'], "channel": trans['channel'],
+                                   "cost": 0.0, "shares": 0.0, "confirm_days": 1}
+                        pdf = pd.concat([pdf, pd.DataFrame([new_row])], ignore_index=True);
+                        idx = len(pdf) - 1
                     else:
-                        new_cost = 0.0
-                    portfolio_df.at[idx, 'shares'] = new_shares
-                    portfolio_df.at[idx, 'cost'] = new_cost
-                else:
-                    new_shares = float(current_row['shares']) - trade_shares
-                    portfolio_df.at[idx, 'shares'] = new_shares if new_shares > 0 else 0
+                        idx = matches.index[0]
 
-                # 保存更新
-                save_portfolio_df(portfolio_df)
+                    # 计算持仓... (省略重复计算代码，与之前逻辑一致)
+                    cur = pdf.loc[idx]
+                    if trans['mode'] == "amount":
+                        sh = float(trans['value']) / real_price; amt = float(trans['value'])
+                    else:
+                        sh = float(trans['value']); amt = float(trans['value']) * real_price
 
-                # 移除已结算交易
-                remaining_trans = [x for x in transactions if x != trans]
-                conn = get_conn()
-                conn.update(worksheet="transactions", data=pd.DataFrame(remaining_trans))
+                    if trans['type'] == 'buy':
+                        ns = float(cur['shares']) + sh
+                        nc = (float(cur['shares']) * float(cur['cost']) + amt) / ns if ns > 0 else 0
+                        pdf.at[idx, 'shares'], pdf.at[idx, 'cost'] = ns, nc
+                    else:
+                        ns = float(cur['shares']) - sh
+                        pdf.at[idx, 'shares'] = ns if ns > 0 else 0
 
-                st.toast("✅ 交易结算完成");
-                time.sleep(1);
+                    save_portfolio_df(pdf)
+
+                    # 4. 更新云端交易表
+                    # 注意：这里我们过滤原数据源 transactions，而不是 pending_trans
+                    # 必须把原始数据里的这一条也删掉
+                    rem = [t for t in transactions if
+                           f"{t['code']}_{t['trade_date']}_{t['type']}_{t['value']}" != current_id]
+                    safe_update_transactions(rem)
+
+                    st.toast("✅ 结算完成");
+                    time.sleep(0.5);
+                    st.rerun()
+            else:
+                c4.write("-")
+
+            # === 撤销逻辑 ===
+            if c5.button("🗑️", key=f"btn_del_{i}"):
+                row_container.empty()  # 1. 立即视觉消失
+
+                # 2. 加入黑名单 (防止闪回)
+                st.session_state.trans_blacklist.append(current_id)
+
+                # 3. 更新云端
+                rem = [t for t in transactions if
+                       f"{t['code']}_{t['trade_date']}_{t['type']}_{t['value']}" != current_id]
+                safe_update_transactions(rem)
+
+                st.toast("🗑️ 已撤销");
+                time.sleep(0.5);
                 st.rerun()
-        else:
-            col4.write("-")
-
-        # 撤销按钮
-        if col5.button("🗑️", key=f"btn_del_{i}"):
-            remaining_trans = [x for x in transactions if x != trans]
-            conn = get_conn()
-            conn.update(worksheet="transactions", data=pd.DataFrame(remaining_trans))
-            st.toast("🗑️ 交易已撤销");
-            time.sleep(0.5);
-            st.rerun()
-
 
 # ==========================================
 # 7. 页面主入口
